@@ -135,7 +135,11 @@ __attribute__ ((__nothrow__ , __leaf__)) __signbitl (long double __x)
   return (__u.__i[2] & 0x8000) != 0;
 }
 
+__declspec(noalias) __declspec(restrict) void *somefunc(int a, int b);
+void bar(float *restrict bar);
+
 int main(int argc, char *argv[])
 {
+    int *restrict ptr = (int * restrict) &argc;
     return pix_fmt_info[argc].depth;
 }
