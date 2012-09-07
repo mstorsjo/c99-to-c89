@@ -183,6 +183,14 @@ static EndScope *end_scopes = NULL;
 static unsigned n_end_scopes = 0;
 static unsigned n_allocated_end_scopes = 0;
 
+typedef struct {
+    int n;
+    const char *replacement;
+} ReplacedToken;
+static ReplacedToken *replaced_tokens = NULL;
+static unsigned n_replaced_tokens = 0;
+static unsigned n_allocated_replaced_tokens = 0;
+
 static FILE *out;
 
 static CXTranslationUnit TU;
@@ -1634,6 +1642,54 @@ static enum CXChildVisitResult callback(CXCursor cursor, CXCursor parent,
     return CXChildVisit_Continue;
 }
 
+void find_tokens_to_replace(CXToken *tokens, unsigned n_tokens)
+{
+    unsigned n;
+    for (n = 0; n < n_tokens; n++) {
+        CXString s;
+        const char *str;
+        s = clang_getTokenSpelling(TU, tokens[n]);
+        str = clang_getCString(s);
+        if (!strcmp(str, "restrict")) {
+            int replace = 1;
+            if (n > 1 && n + 1 < n_tokens) {
+                CXString pre1, pre2, post;
+                const char *str_pre1, *str_pre2, *str_post;
+                pre1 = clang_getTokenSpelling(TU, tokens[n - 2]);
+                pre2 = clang_getTokenSpelling(TU, tokens[n - 1]);
+                post = clang_getTokenSpelling(TU, tokens[n + 1]);
+                str_pre1 = clang_getCString(pre1);
+                str_pre2 = clang_getCString(pre2);
+                str_post = clang_getCString(post);
+                if (!strcmp(str_pre1, "__declspec") &&
+                    !strcmp(str_pre2, "(") && !strcmp(str_post, ")"))
+                    replace = 0;
+                clang_disposeString(pre1);
+                clang_disposeString(pre2);
+                clang_disposeString(post);
+            }
+            if (replace) {
+                ReplacedToken *rt;
+                if (n_replaced_tokens == n_allocated_replaced_tokens) {
+                    unsigned num = n_allocated_replaced_tokens + 16;
+                    void *mem = realloc(replaced_tokens,
+                                        sizeof(*replaced_tokens) * num);
+                    if (!mem) {
+                        fprintf(stderr, "Failed to allocate memory for str/arr\n");
+                        exit(1);
+                    }
+                    replaced_tokens = (ReplacedToken *) mem;
+                    n_allocated_replaced_tokens = num;
+                }
+                rt = &replaced_tokens[n_replaced_tokens++];
+                rt->n = n;
+                rt->replacement = "__restrict";
+            }
+        }
+        clang_disposeString(s);
+    }
+}
+
 static double eval_expr(CXToken *tokens, unsigned *n, unsigned last);
 
 static double eval_prim(CXToken *tokens, unsigned *n, unsigned last)
@@ -2217,7 +2273,21 @@ static void print_token_wrapper(CXToken *tokens, unsigned n_tokens,
                comp_literal_lists[*clidx].type == TYPE_UNKNOWN)
             (*clidx)++;
     } else {
-        print_token(tokens[*n], lnum, cpos);
+        // todo: Use binary search
+        unsigned i;
+        for (i = 0; i < n_replaced_tokens; i++) {
+            if (replaced_tokens[i].n == *n) {
+                CXString spelling;
+                print_literal_text(replaced_tokens[i].replacement, lnum, cpos);
+                get_token_position(tokens[*n], lnum, cpos, &off);
+                spelling = clang_getTokenSpelling(TU, tokens[*n]);
+                (*cpos) += strlen(clang_getCString(spelling));
+                clang_disposeString(spelling);
+                break;
+            }
+        }
+        if (i >= n_replaced_tokens)
+            print_token(tokens[*n], lnum, cpos);
     }
 
     while (*esidx < n_end_scopes && off >= end_scopes[*esidx].end - 1) {
@@ -2293,6 +2363,13 @@ static void cleanup(void)
                 n, end_scopes[n].end, end_scopes[n].n_scopes);
     }
     free(end_scopes);
+
+    dprintf("N replaced tokens: %d\n", n_replaced_tokens);
+    for (n = 0; n < n_replaced_tokens; n++) {
+        dprintf("[%d]: n=%u replacement=%s\n",
+                n, replaced_tokens[n].n, replaced_tokens[n].replacement);
+    }
+    free(replaced_tokens);
 
     dprintf("N typedef entries: %d\n", n_typedefs);
     for (n = 0; n < n_typedefs; n++) {
@@ -2391,6 +2468,7 @@ int convert(const char *infile, const char *outfile)
     cursor = clang_getTranslationUnitCursor(TU);
     range  = clang_getCursorExtent(cursor);
     clang_tokenize(TU, range, &tokens, &n_tokens);
+    find_tokens_to_replace(tokens, n_tokens);
 
     memset(&rec, 0, sizeof(rec));
     rec.tokens = tokens;
