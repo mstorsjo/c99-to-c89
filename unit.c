@@ -99,3 +99,5 @@ int main(int argc, char *argv[])
     else          return call_function((AVRational){2, X});
 #undef X
 }
+
+int foo () { for( int i = 0; i < 9; i++ ); return 0; }
