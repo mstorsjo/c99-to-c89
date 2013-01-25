@@ -31,6 +31,8 @@ enum PixelType {
     PIXEL_PLANAR = 2,
     PIXEL_PACKED = PIXEL_PLANAR + 1,
     PIXEL_PALETTE = 5,
+    PIXEL_TEST_CAST = (int)1 + 2,
+    PIXEL_TEST_BIG_EXPR = ((((int)'N'))+(((int)'V')<<8)+(((int)'1')<<16)+(((int)'2')<<24)),
 };
 
 static const struct PixFmtInfo pix_fmt_info[] = {
