@@ -157,7 +157,10 @@ int main(int argc, char *argv[])
 {
     printf("Hi\n");
     int j = PIX_FMT_NB;
-    for (int i = 0; i < j; i++)
-        return pix_fmt_info[i].depth;
+    for (int i = 0; i < j; i++) {
+        for (int k = 0; k < 42; k++) {
+            return pix_fmt_info[i].depth;
+        }
+    }
     return j != 0;
 }
