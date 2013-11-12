@@ -1,0 +1,181 @@
+#!/bin/sh
+
+# Copyright (c) 2013, Martin Storsjo
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+while [ $# -gt 0 ]; do
+    if [ "$1" = "-keep" ]; then
+        keep=1
+    elif [ "$1" = "-noconv" ]; then
+        noconv=1
+    else
+        break
+    fi
+    shift
+done
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 [-keep] [-noconv] compiler [args ...]" >&2
+    exit 0
+fi
+
+converter=$(dirname $0)/c99conv
+
+preproc_temp="preprocessed_$$.c"
+converted_temp="converted_$$.c"
+
+compiler=$(basename $1 | cut -d. -f1)
+if [ "$compiler" = "cl" ]; then
+    msvc=1
+    convert_options="-ms"
+elif [ "$compiler" = "icl" ]; then
+    msvc=1
+fi
+
+case $(uname -s) in
+MINGW*)
+    fix_filename() {
+        # Since this script runs in msys and isn't a pure win32 application,
+        # all arguments to it are kept in msys form still here and have to be
+        # converted manually. With the C version of c99wrap, msys automatically
+        # converted the parameters before invoking c99wrap.
+        cmd //c echo $1
+    }
+    ;;
+*)
+    fix_filename() {
+        echo $1
+    }
+    ;;
+esac
+
+while [ $# -gt 0 ]; do
+    arg=$1
+    arg_1=$(echo $arg | awk '{ string=substr($0, 1, 1); print string; }')
+    arg_2=$(echo $arg | awk '{ string=substr($0, 1, 2); print string; }')
+    arg_3=$(echo $arg | awk '{ string=substr($0, 1, 3); print string; }')
+    ext=${arg##*.}
+    ext_inputfile=
+    if [ "$ext" = "c" ] || [ "$ext" = "s" ] || [ "$ext" = "S" ]; then
+        ext_inputfile=1
+        input_source=1
+        source_file=$arg
+    elif [ "$ext" = "o" ] && [ "$arg_1" != "-" ]; then
+        # don't match an -Fofoobar.o
+        ext_inputfile=1
+    fi
+    if [ "$arg_3" = "-Fo" ] || [ "$arg_3" = "-Fi" ] || [ "$arg_3" = "-Fe" ] || [ "$arg" = "-out" ] || [ "$arg" = "-o" ] || [ "$arg" = "-FI" ]; then
+        # Copy the output filename only to cc
+        if [ "$arg_3" = "-Fo" ] || [ "$arg_3" = "-Fi" ] || [ "$arg_3" = "-Fe" ] || [ "$arg" = "-out" ]; then
+
+            # Support the nonstandard syntax -Fo filename or -out filename, to get around msys file name mangling issues
+            filename=$(fix_filename $2)
+            if [ "$arg" = "-out" ]; then
+                new_arg="-out:$filename"
+            else
+                new_arg="$arg$filename"
+            fi
+            cc_args="$cc_args $new_arg"
+            pass_args="$pass_args $new_arg"
+            outname=$filename
+            shift
+            shift
+            continue
+        elif [ "$arg" = "-FI" ]; then
+            filename=$(fix_filename $2)
+            new_arg="$arg$filename"
+            cpp_args="$cc_args $new_arg"
+            pass_args="$pass_args $new_arg"
+            shift
+            shift
+            continue
+        elif [ "$arg_3" = "-Fo" ] || [ "$arg_3" = "-Fi" ] || [ "$arg_3" = "-Fe" ]; then
+            cc_args="$cc_args $arg"
+            pass_args="$pass_args $arg"
+            outname=$(echo $arg | sed 's/^...//')
+        else
+            # -o
+            cc_args="$cc_args $arg $2"
+            pass_args="$pass_args $arg $2"
+            outname=$2
+            shift
+            shift
+            continue
+        fi
+    elif [ "$arg" = "-c" ]; then
+        # Copy the compile flag only to cc, set the preprocess flag for cpp
+        cc_args="$cc_args $arg"
+        pass_args="$pass_args $arg"
+        cpp_args="$cpp_args -E"
+        flag_compile=1
+    elif [ -n "$ext_inputfile" ]; then
+        # Input filename, pass to cpp only, set the temp file input to cc later
+        cpp_args="$cpp_args $arg"
+        pass_args="$pass_args $arg"
+    elif [ "$arg" = "-MMD" ] || [ "$arg_2" = "-D" ]; then
+        # Preprocessor-only parameter
+        cpp_args="$cpp_args $arg"
+        pass_args="$pass_args $arg"
+    elif [ "$arg" = "-MF" ] || [ "$arg_3" = "-MT" ]; then
+        # Deps generation, pass to cpp only
+        cpp_args="$cpp_args $arg $2"
+        pass_args="$pass_args $arg $2"
+        shift
+        shift
+        continue
+    elif [ "$arg_3" = "-FI" ]; then
+        # Forced include, pass to cpp only
+        cpp_args="$cpp_args $arg"
+        pass_args="$pass_args $arg"
+    else
+        # Normal parameter, copy to both cc and cpp
+        cc_args="$cc_args $arg"
+        cpp_args="$cpp_args $arg"
+        pass_args="$pass_args $arg"
+    fi
+    shift
+done
+
+if [ -n "$outname" ]; then
+    preproc_temp="${outname}_preprocessed.c"
+    converted_temp="${outname}_converted.c"
+fi
+
+if [ -z "$flag_compile" ] || [ -z "$source_file" ] || [ -z "$outname" ] || [ -n "$noconv" ]; then
+    $pass_args
+    exit $?
+fi
+
+cc_args="$cc_args $converted_temp"
+
+$cpp_args > $preproc_temp
+err=$?
+if [ $err != 0 ]; then
+    [ -z "$keep" ] && rm -f $preproc_temp
+    exit $err
+fi
+
+$converter $convert_options $preproc_temp $converted_temp
+err=$?
+if [ $err != 0 ]; then
+    [ -z "$keep" ] && rm -f $preproc_temp $converted_temp
+    exit $err
+fi
+
+[ -z "$keep" ] && rm -f $preproc_temp
+
+$cc_args
+err=$?
+[ -z "$keep" ] && rm -f $converted_temp
+exit $err
